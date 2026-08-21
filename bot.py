@@ -254,6 +254,7 @@ async def gun_sayaci() -> None:
     """
     channel = get_channel(COUNTER_CHANNEL_ID)
     if channel is None:
+        print("[sayac] COUNTER_CHANNEL_ID bulunamadi — ID dogru mu?")
         return
 
     gun = days_since(reference_moment())
@@ -401,10 +402,18 @@ async def mum(interaction: discord.Interaction) -> None:
     await persist()
     await refresh_kitabe()
 
-    mesaj = f"🕯️ Mumu yaktın. Toplam **{state.candles}** mum."
+    embed = discord.Embed(
+        description=(
+            f"🕯️ {interaction.user.mention} bir mum yaktı.\n"
+            f"Mezarlıkta yanan mum sayısı: **{state.candles}**"
+        ),
+        colour=discord.Colour.from_str("#C9A35A"),
+    )
     if ilk_kez:
-        mesaj += "\nMezarlığa ilk gelişin — hoş geldin."
-    await interaction.response.send_message(mesaj, ephemeral=True)
+        embed.set_footer(text="Mezarlığa ilk gelişi.")
+
+    # ephemeral yok: mesaj kanala dusuyor, herkes goruyor
+    await interaction.response.send_message(embed=embed)
 
 
 # ---------------------------------------------------------------- 4) son gorulme
@@ -431,7 +440,7 @@ async def update_lastseen_topic() -> None:
 
     try:
         await channel.edit(topic=topic[:1024], reason="Son gorulme takibi")
-        print(f"[son gorulme] aciklama guncellendi")
+        print("[son gorulme] aciklama guncellendi")
     except discord.Forbidden:
         print("[son gorulme] yetki yok — bota 'Kanalları Yönet' izni verin")
     except discord.HTTPException as exc:
@@ -545,6 +554,9 @@ async def arsiv_tara(interaction: discord.Interaction, kanal_basina: int = 0) ->
     ]
     if en_yeni:
         ozet.append(f"🥀 Bulunan son mesaj: {human_date(en_yeni)}")
+    else:
+        ozet.append("⚠️ Hiç mesajı bulunamadı — gün sayacı çalışmaz. "
+                    "`FALLBACK_LAST_MESSAGE` değişkenine elle bir tarih girin.")
     await interaction.followup.send("\n".join(ozet), ephemeral=True)
 
 
@@ -558,7 +570,8 @@ async def mezarlik(interaction: discord.Interaction) -> None:
         value=f"{GHOST_INTERVAL_HOURS} saatte bir konuşur",
         inline=True,
     )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    # ephemeral yok: durumu herkes gorsun
+    await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name="hayalet-simdi", description="Hayaleti hemen konuştur (yönetici)", guild=GUILD)
