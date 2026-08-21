@@ -20,6 +20,7 @@ bir mesajin ekinde JSON olarak tutar. Bot yeniden baslayinca oradan okur.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import os
@@ -79,6 +80,13 @@ COUNTER_TEMPLATE = _env("COUNTER_TEMPLATE", required=False, default="⏳ {gun} g
 GHOST_INTERVAL_HOURS = int(_env("GHOST_INTERVAL_HOURS", required=False, default="168"))
 DIRILIS_ESIK_GUN = int(_env("DIRILIS_ESIK_GUN", required=False, default="30"))
 SCAN_LIMIT = int(_env("SCAN_LIMIT_PER_CHANNEL", required=False, default="5000"))
+
+# Gorunum
+# MUM_EMOJI: animasyonlu ozel emoji icin <a:isim:ID> yapistir, bos birakirsan 🕯️ kullanilir
+MUM_EMOJI = _env("MUM_EMOJI", required=False, default="🕯️")
+KITABE_GIF_URL = _env("KITABE_GIF_URL", required=False)   # embed'e gomulecek GIF
+MUM_SATIR = int(_env("MUM_SATIR", required=False, default="10"))   # satir basina mum
+MUM_TAVAN = int(_env("MUM_TAVAN", required=False, default="60"))   # en fazla kac mum cizilsin
 
 STATE_FILENAME = "mezarlik-state.json"
 MAX_QUOTES = 500
@@ -352,19 +360,38 @@ async def _before_hayalet() -> None:
 # ---------------------------------------------------------------- 3) mum sayaci
 
 
+def mum_duvari(adet: int) -> str:
+    """Mum sayisini gorsel bir duvara cevirir. MUM_EMOJI animasyonluysa duvar da oynar."""
+    if adet <= 0:
+        return "_Henüz kimse mum yakmadı._"
+
+    cizilecek = min(adet, MUM_TAVAN)
+    satirlar = [
+        " ".join([MUM_EMOJI] * min(MUM_SATIR, cizilecek - i))
+        for i in range(0, cizilecek, MUM_SATIR)
+    ]
+    metin = "\n".join(satirlar)
+    if adet > MUM_TAVAN:
+        metin += f"\n_…ve {adet - MUM_TAVAN} tane daha_"
+    return metin
+
+
 def kitabe_embed() -> discord.Embed:
     embed = discord.Embed(
         title="🕯️ Anma Mumları",
         description=(
-            f"Bugüne kadar **{state.candles}** mum yakıldı.\n"
+            f"{mum_duvari(state.candles)}\n\n"
+            f"Bugüne kadar **{state.candles}** mum yakıldı, "
             f"**{len(state.candle_lighters)}** kişi uğradı."
         ),
-        colour=discord.Colour.from_str("#4B5058"),
+        colour=discord.Colour.from_str("#C9A35A"),
     )
     moment = reference_moment()
     if moment:
         embed.add_field(name="Son iz", value=human_date(moment), inline=True)
         embed.add_field(name="Geçen süre", value=f"{days_since(moment)} gün", inline=True)
+    if KITABE_GIF_URL:
+        embed.set_image(url=KITABE_GIF_URL)
     embed.set_footer(text="Mum yakmak için  /mum")
     return embed
 
@@ -402,18 +429,32 @@ async def mum(interaction: discord.Interaction) -> None:
     await persist()
     await refresh_kitabe()
 
-    embed = discord.Embed(
+    # 1. kare: mum yakiliyor
+    yakiliyor = discord.Embed(
+        description=f"{MUM_EMOJI}  {interaction.user.mention} bir mum yakıyor…",
+        colour=discord.Colour.from_str("#4B5058"),
+    )
+    # ephemeral yok: mesaj kanala dusuyor, herkes goruyor
+    await interaction.response.send_message(embed=yakiliyor)
+
+    # 2. kare: duvar aciliyor. Tek bir edit, rate limit derdi yok.
+    await asyncio.sleep(1.4)
+
+    acildi = discord.Embed(
         description=(
-            f"🕯️ {interaction.user.mention} bir mum yaktı.\n"
+            f"{interaction.user.mention} bir mum yaktı.\n\n"
+            f"{mum_duvari(state.candles)}\n\n"
             f"Mezarlıkta yanan mum sayısı: **{state.candles}**"
         ),
         colour=discord.Colour.from_str("#C9A35A"),
     )
     if ilk_kez:
-        embed.set_footer(text="Mezarlığa ilk gelişi.")
+        acildi.set_footer(text="Mezarlığa ilk gelişi.")
 
-    # ephemeral yok: mesaj kanala dusuyor, herkes goruyor
-    await interaction.response.send_message(embed=embed)
+    try:
+        await interaction.edit_original_response(embed=acildi)
+    except discord.HTTPException as exc:
+        print(f"[mum] animasyon tamamlanamadi: {exc}")
 
 
 # ---------------------------------------------------------------- 4) son gorulme
