@@ -103,6 +103,12 @@ def emoji_gorsel(raw: str) -> Optional[str]:
 # Once elle verilen GIF, yoksa MUM_EMOJI'den turetilen gorsel
 MUM_GORSEL = KITABE_GIF_URL or emoji_gorsel(MUM_EMOJI)
 
+# Muzik tetigi (opsiyonel). Ucu de doldurulmazsa ozellik kapali kalir.
+MUZIK_SES_KANALI_ID = _env_int("MUZIK_SES_KANALI_ID", required=False)   # izlenecek ses kanali
+MUZIK_KOMUT_KANALI_ID = _env_int("MUZIK_KOMUT_KANALI_ID", required=False)  # komutun yazilacagi yazi kanali
+MUZIK_KOMUT = _env("MUZIK_KOMUT", required=False)  # ornek: m!play https://youtu.be/xxxx
+MUZIK_BEKLEME_SN = int(_env("MUZIK_BEKLEME_SN", required=False, default="300"))
+
 STATE_FILENAME = "mezarlik-state.json"
 MAX_QUOTES = 500
 
@@ -454,6 +460,93 @@ async def mum(interaction: discord.Interaction) -> None:
         await interaction.edit_original_response(embed=acildi)
     except discord.HTTPException as exc:
         print(f"[mum] animasyon tamamlanamadi: {exc}")
+
+
+# ---------------------------------------------------------------- muzik tetigi
+
+
+_son_muzik_tetigi: Optional[datetime] = None
+
+
+async def muzik_baslat(sebep: str) -> bool:
+    """Jockie'ye komutu yazar. Gonderebildiyse True doner."""
+    global _son_muzik_tetigi
+
+    kanal = get_channel(MUZIK_KOMUT_KANALI_ID)
+    if not isinstance(kanal, discord.TextChannel):
+        print("[muzik] MUZIK_KOMUT_KANALI_ID bir yazi kanali degil")
+        return False
+
+    try:
+        await kanal.send(MUZIK_KOMUT)
+        _son_muzik_tetigi = now()
+        print(f"[muzik] komut gonderildi ({sebep}): {MUZIK_KOMUT}")
+        return True
+    except discord.HTTPException as exc:
+        print(f"[muzik] gonderilemedi: {exc}")
+        return False
+
+
+@bot.event
+async def on_voice_state_update(
+    member: discord.Member,
+    before: discord.VoiceState,
+    after: discord.VoiceState,
+) -> None:
+    if not (MUZIK_SES_KANALI_ID and MUZIK_KOMUT_KANALI_ID and MUZIK_KOMUT):
+        return
+
+    # Jockie'nin kendi girisi tekrar tetiklemesin
+    if member.bot:
+        return
+
+    # Hedef kanala giris mi?
+    if after.channel is None or after.channel.id != MUZIK_SES_KANALI_ID:
+        return
+
+    # Ayni kanaldaysa sadece mikrofon/kamera degismistir, giris degil
+    if before.channel is not None and before.channel.id == after.channel.id:
+        return
+
+    # Sadece odayi ilk acan kisi tetiklesin; ikinci kisi girince muzik zaten caliyordur
+    insanlar = [uye for uye in after.channel.members if not uye.bot]
+    if len(insanlar) != 1:
+        return
+
+    # Kisa araliklarla girip cikmalar Jockie'yi bogmasin
+    if _son_muzik_tetigi is not None:
+        gecen = (now() - _son_muzik_tetigi).total_seconds()
+        if gecen < MUZIK_BEKLEME_SN:
+            print(f"[muzik] bekleme suresi doldurulmadi ({int(gecen)}s)")
+            return
+
+    await muzik_baslat(f"{member.display_name} odaya girdi")
+
+
+@bot.tree.command(
+    name="muzik-dene",
+    description="Müzik komutunu hemen gönderir, Jockie tepki veriyor mu diye bakar (yönetici)",
+    guild=GUILD,
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def muzik_dene(interaction: discord.Interaction) -> None:
+    if not (MUZIK_KOMUT_KANALI_ID and MUZIK_KOMUT):
+        await interaction.response.send_message(
+            "Müzik tetiği kapalı. Railway'de `MUZIK_KOMUT_KANALI_ID` ve `MUZIK_KOMUT` "
+            "değişkenlerini doldurman lazım.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    ok = await muzik_baslat("elle test")
+    await interaction.followup.send(
+        "📨 Komut gönderildi. Kanala bak — Jockie cevap verdiyse çalışıyor, "
+        "hiç tepki vermediyse bot komutlarını görmezden geliyor demektir."
+        if ok
+        else "Gönderilemedi, Deploy Logs'taki `[muzik]` satırına bak.",
+        ephemeral=True,
+    )
 
 
 # ---------------------------------------------------------------- 4) son gorulme
