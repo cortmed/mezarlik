@@ -114,6 +114,9 @@ MUZIK_MESAJ_KANALI_ID = _env_int("MUZIK_MESAJ_KANALI_ID", required=False)
 MUZIK_MESAJ_ID = _env_int("MUZIK_MESAJ_ID", required=False)
 MUZIK_DONGU = _env("MUZIK_DONGU", required=False, default="1") != "0"  # bitince bastan alsin mi
 MUZIK_SES_SEVIYESI = float(_env("MUZIK_SES_SEVIYESI", required=False, default="0.5"))
+# Yasin sorusunun yazilacagi kanal. Bos birakilirsa ses kanalinin kendi sohbetine yazar.
+YASIN_KANALI_ID = _env_int("YASIN_KANALI_ID", required=False)
+YASIN_SORU_SN = int(_env("YASIN_SORU_SN", required=False, default="600"))
 
 STATE_FILENAME = "mezarlik-state.json"
 MAX_QUOTES = 500
@@ -128,6 +131,7 @@ class State:
     def __init__(self) -> None:
         self.candles: int = 0
         self.candle_lighters: list[int] = []
+        self.yasin: int = 0
         self.quotes: list[str] = []
         self.used_quotes: list[int] = []
         self.last_message_at: Optional[str] = None   # sayac bunu kullanir
@@ -143,6 +147,7 @@ class State:
         return {
             "candles": self.candles,
             "candle_lighters": self.candle_lighters,
+            "yasin": self.yasin,
             "quotes": self.quotes,
             "used_quotes": self.used_quotes,
             "last_message_at": self.last_message_at,
@@ -154,6 +159,7 @@ class State:
     def from_dict(self, data: dict[str, Any]) -> None:
         self.candles = int(data.get("candles", 0))
         self.candle_lighters = list(data.get("candle_lighters", []))
+        self.yasin = int(data.get("yasin", 0))
         self.quotes = list(data.get("quotes", []))
         self.used_quotes = list(data.get("used_quotes", []))
         self.last_message_at = data.get("last_message_at")
@@ -595,11 +601,11 @@ async def muzik_cal(kanal: discord.VoiceChannel, sebep: str) -> bool:
     def bitince(hata: Optional[Exception]) -> None:
         if hata:
             print(f"[muzik] calma hatasi: {hata}")
-        # Kimse kalmadiysa cik, kaldiysa ve dongu aciksa bastan al
+        # Dongu aciksa sessizce bastan al, kapaliysa odadakilere sor
         if MUZIK_DONGU and _kanaldaki_insanlar(kanal) > 0:
             bot.loop.create_task(muzik_cal(kanal, "dongu"))
         else:
-            bot.loop.create_task(muzik_dur(kanal.guild))
+            bot.loop.create_task(yasin_bitti(kanal))
 
     kaynak = discord.PCMVolumeTransformer(
         discord.FFmpegPCMAudio(akis, **FFMPEG_AYARLARI),
@@ -621,6 +627,87 @@ async def muzik_dur(guild: discord.Guild) -> None:
         print("[muzik] durduruldu, kanaldan cikildi")
     except Exception as exc:
         print(f"[muzik] cikilamadi: {exc}")
+
+
+# ---------------------------------------------------------------- yasin
+
+
+class YasinSorusu(discord.ui.View):
+    """Okuyus bitince cikan iki dugmeli soru."""
+
+    def __init__(self, kanal: discord.VoiceChannel) -> None:
+        super().__init__(timeout=YASIN_SORU_SN)
+        self.kanal = kanal
+        self.mesaj: Optional[discord.Message] = None
+
+    async def _kapat(self, not_: str) -> None:
+        for dugme in self.children:
+            dugme.disabled = True
+        if self.mesaj is not None:
+            try:
+                await self.mesaj.edit(content=f"{self.mesaj.content}\n\n_{not_}_", view=self)
+            except discord.HTTPException:
+                pass
+        self.stop()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # Odada olmayan biri uzaktan tetiklemesin
+        if interaction.user in self.kanal.members:
+            return True
+        await interaction.response.send_message(
+            f"Bunun için {self.kanal.mention} kanalında olman lazım.", ephemeral=True
+        )
+        return False
+
+    @discord.ui.button(label="Evet, bir tane daha", style=discord.ButtonStyle.success, emoji="🕯️")
+    async def evet(self, interaction: discord.Interaction, dugme: discord.ui.Button) -> None:
+        await interaction.response.defer()
+        await self._kapat(f"{interaction.user.display_name} bir tane daha istedi.")
+        await muzik_cal(self.kanal, f"{interaction.user.display_name} yasin istedi")
+
+    @discord.ui.button(label="Yeter", style=discord.ButtonStyle.secondary, emoji="🤲")
+    async def hayir(self, interaction: discord.Interaction, dugme: discord.ui.Button) -> None:
+        await interaction.response.defer()
+        await self._kapat("Mezarlık sessizliğe bırakıldı.")
+        await muzik_dur(self.kanal.guild)
+
+    async def on_timeout(self) -> None:
+        await self._kapat("Cevap gelmedi, mezarlık sessizliğe bırakıldı.")
+        await muzik_dur(self.kanal.guild)
+
+
+async def yasin_bitti(kanal: discord.VoiceChannel) -> None:
+    """Bir okuyus bitti: sayaci artir, odadakilere sor."""
+    state.yasin += 1
+    await persist()
+
+    insanlar = [uye for uye in kanal.members if not uye.bot]
+    if not insanlar:
+        # Kimse kalmamis, soracak kimse yok
+        await muzik_dur(kanal.guild)
+        return
+
+    hedef = get_channel(YASIN_KANALI_ID) if YASIN_KANALI_ID else kanal
+    if not isinstance(hedef, discord.abc.Messageable):
+        hedef = kanal
+
+    etiketler = " ".join(uye.mention for uye in insanlar)
+    metin = (
+        f"{etiketler}\n\n"
+        "🕯️ Oğuzhan Baki'nin ruhuna bir adet Yasin okundu. Allah kabul etsin.\n"
+        f"_Bugüne kadar okunan: {state.yasin}_\n\n"
+        "Bir tane daha okumamı ister misin?"
+    )
+
+    gorunum = YasinSorusu(kanal)
+    try:
+        gorunum.mesaj = await hedef.send(metin, view=gorunum)
+    except discord.HTTPException as exc:
+        print(f"[yasin] soru gonderilemedi: {exc}")
+        await muzik_dur(kanal.guild)
+        return
+
+    print(f"[yasin] {state.yasin}. okuyus bitti, {len(insanlar)} kisiye soruldu")
 
 
 @bot.event
@@ -840,6 +927,7 @@ async def arsiv_tara(interaction: discord.Interaction, kanal_basina: int = 0) ->
 async def mezarlik(interaction: discord.Interaction) -> None:
     embed = kitabe_embed()
     embed.title = "🪦 Mezarlık"
+    embed.add_field(name="Okunan Yasin", value=str(state.yasin), inline=True)
     embed.add_field(name="Arşivdeki söz", value=str(len(state.quotes)), inline=True)
     embed.add_field(
         name="Hayalet",
