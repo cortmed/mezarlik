@@ -106,6 +106,12 @@ MUM_GORSEL = KITABE_GIF_URL or emoji_gorsel(MUM_EMOJI)
 # Muzik (opsiyonel). Ikisi de doldurulmazsa ozellik kapali kalir.
 MUZIK_SES_KANALI_ID = _env_int("MUZIK_SES_KANALI_ID", required=False)  # izlenecek ses kanali
 MUZIK_URL = _env("MUZIK_URL", required=False)  # YouTube linki ya da dogrudan ses dosyasi adresi
+# Discord'a yuklenmis bir ses dosyasindan calmak icin (en saglam yol):
+# dosyayi bir kanala at, mesaja sag tik -> "Mesaj Bagini Kopyala", sondaki
+# iki sayiyi buraya yaz. Discord'un dosya linkleri sureli oldugu icin bot
+# adresi her calmadan once mesajdan yeniden okur, boylece hic bayatlamaz.
+MUZIK_MESAJ_KANALI_ID = _env_int("MUZIK_MESAJ_KANALI_ID", required=False)
+MUZIK_MESAJ_ID = _env_int("MUZIK_MESAJ_ID", required=False)
 MUZIK_DONGU = _env("MUZIK_DONGU", required=False, default="1") != "0"  # bitince bastan alsin mi
 MUZIK_SES_SEVIYESI = float(_env("MUZIK_SES_SEVIYESI", required=False, default="0.5"))
 
@@ -498,6 +504,39 @@ FFMPEG_AYARLARI = {
 }
 
 
+DOGRUDAN_UZANTILAR = (".mp3", ".ogg", ".wav", ".m4a", ".opus", ".flac", ".webm", ".mp4")
+
+
+def _dogrudan_medya_mi(url: str) -> bool:
+    """Adres zaten bir ses dosyasiysa yt_dlp'ye hic ugramaya gerek yok."""
+    yol = url.split("?", 1)[0].lower()
+    return yol.endswith(DOGRUDAN_UZANTILAR)
+
+
+async def _mesajdaki_dosya() -> Optional[tuple[str, str]]:
+    """Belirtilen mesajin ekindeki ses dosyasinin taze adresini dondurur."""
+    if not MUZIK_MESAJ_ID:
+        return None
+
+    kanal = get_channel(MUZIK_MESAJ_KANALI_ID or DATA_CHANNEL_ID)
+    if not isinstance(kanal, discord.TextChannel):
+        print("[muzik] MUZIK_MESAJ_KANALI_ID bir yazi kanali degil")
+        return None
+
+    try:
+        mesaj = await kanal.fetch_message(MUZIK_MESAJ_ID)
+    except discord.HTTPException as exc:
+        print(f"[muzik] mesaj okunamadi: {exc}")
+        return None
+
+    if not mesaj.attachments:
+        print("[muzik] o mesajda dosya eki yok")
+        return None
+
+    ek = mesaj.attachments[0]
+    return ek.url, ek.filename
+
+
 def _ses_kaynagi(url: str) -> tuple[str, str]:
     """YouTube linkinden dogrudan ses akisi adresini cikarir.
 
@@ -519,22 +558,30 @@ def _kanaldaki_insanlar(kanal: discord.VoiceChannel) -> int:
 
 async def muzik_cal(kanal: discord.VoiceChannel, sebep: str) -> bool:
     """Bota kanala girip parcayi caldirir."""
-    if not MUZIK_URL:
-        print("[muzik] MUZIK_URL bos")
-        return False
-
     ses = kanal.guild.voice_client
     if ses is not None and ses.is_playing():
         print("[muzik] zaten caliyor")
         return False
 
-    try:
-        akis, baslik = await asyncio.get_running_loop().run_in_executor(
-            None, _ses_kaynagi, MUZIK_URL
-        )
-    except Exception as exc:
-        print(f"[muzik] kaynak cozulemedi: {exc}")
-        return False
+    # 1) Discord'a yuklenmis dosya (en saglam) 2) dogrudan ses adresi 3) YouTube
+    kaynak_bilgi = await _mesajdaki_dosya()
+
+    if kaynak_bilgi is None:
+        if not MUZIK_URL:
+            print("[muzik] ne MUZIK_MESAJ_ID ne MUZIK_URL dolu")
+            return False
+        if _dogrudan_medya_mi(MUZIK_URL):
+            kaynak_bilgi = (MUZIK_URL, MUZIK_URL.rsplit("/", 1)[-1].split("?")[0])
+        else:
+            try:
+                kaynak_bilgi = await asyncio.get_running_loop().run_in_executor(
+                    None, _ses_kaynagi, MUZIK_URL
+                )
+            except Exception as exc:
+                print(f"[muzik] kaynak cozulemedi: {exc}")
+                return False
+
+    akis, baslik = kaynak_bilgi
 
     try:
         if ses is None:
@@ -582,7 +629,7 @@ async def on_voice_state_update(
     before: discord.VoiceState,
     after: discord.VoiceState,
 ) -> None:
-    if not (MUZIK_SES_KANALI_ID and MUZIK_URL):
+    if not (MUZIK_SES_KANALI_ID and (MUZIK_URL or MUZIK_MESAJ_ID)):
         return
     if member.bot:
         return
@@ -619,9 +666,10 @@ async def on_voice_state_update(
 @app_commands.checks.has_permissions(manage_guild=True)
 async def muzik_dene(interaction: discord.Interaction) -> None:
     kanal = get_channel(MUZIK_SES_KANALI_ID)
-    if not isinstance(kanal, discord.VoiceChannel) or not MUZIK_URL:
+    if not isinstance(kanal, discord.VoiceChannel) or not (MUZIK_URL or MUZIK_MESAJ_ID):
         await interaction.response.send_message(
-            "Müzik kapalı. Railway'de `MUZIK_SES_KANALI_ID` ve `MUZIK_URL` doldurulmalı.",
+            "Müzik kapalı. `MUZIK_SES_KANALI_ID` ve (`MUZIK_MESAJ_ID` veya `MUZIK_URL`) "
+            "doldurulmalı.",
             ephemeral=True,
         )
         return
