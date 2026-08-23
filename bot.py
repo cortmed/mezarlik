@@ -171,19 +171,36 @@ class State:
                 return
         print("[durum] kayit bulunamadi, sifirdan basliyoruz")
 
-    async def save(self, channel: discord.TextChannel) -> None:
+    def _dosya(self) -> discord.File:
         payload = json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
-        file = discord.File(io.BytesIO(payload.encode("utf-8")), filename=STATE_FILENAME)
+        return discord.File(io.BytesIO(payload.encode("utf-8")), filename=STATE_FILENAME)
+
+    async def save(self, channel: discord.TextChannel) -> None:
+        """Durumu veri kanalindaki mesaja yazar.
+
+        Discord, bir saatten eski mesajlarin duzenlenmesine kota koyuyor
+        (hata 30046). Kotaya carparsak eski mesaji birakip yenisini aciyoruz;
+        `load` her zaman en yeni kaydi okudugu icin veri kaybolmuyor.
+        """
+        if self._message is not None:
+            try:
+                await self._message.edit(attachments=[self._dosya()])
+                return
+            except discord.HTTPException as exc:
+                if getattr(exc, "code", None) == 30046:
+                    print("[durum] duzenleme kotasi doldu, yeni kayit mesaji aciliyor")
+                    self._message = None
+                else:
+                    print(f"[durum] kaydedilemedi: {exc}")
+                    return
+
         try:
-            if self._message is not None:
-                await self._message.edit(attachments=[file])
-            else:
-                self._message = await channel.send(
-                    "🪦 Mezarlik botunun hafizasi. **Bu mesaji silmeyin.**",
-                    file=file,
-                )
+            self._message = await channel.send(
+                "🪦 Mezarlik botunun hafizasi. **Bu mesaji silmeyin.**",
+                file=self._dosya(),
+            )
         except discord.HTTPException as exc:
-            print(f"[durum] kaydedilemedi: {exc}")
+            print(f"[durum] yeni kayit mesaji acilamadi: {exc}")
 
 
 state = State()
