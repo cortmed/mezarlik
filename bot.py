@@ -108,6 +108,8 @@ MUZIK_SES_KANALI_ID = _env_int("MUZIK_SES_KANALI_ID", required=False)   # izlene
 MUZIK_KOMUT_KANALI_ID = _env_int("MUZIK_KOMUT_KANALI_ID", required=False)  # komutun yazilacagi yazi kanali
 MUZIK_KOMUT = _env("MUZIK_KOMUT", required=False)  # ornek: m!play https://youtu.be/xxxx
 MUZIK_BEKLEME_SN = int(_env("MUZIK_BEKLEME_SN", required=False, default="300"))
+# Komuttan sonra bot kanalda kac saniye dursun. 0 = hic cikmasin.
+MUZIK_CIKIS_SN = int(_env("MUZIK_CIKIS_SN", required=False, default="15"))
 
 STATE_FILENAME = "mezarlik-state.json"
 MAX_QUOTES = 500
@@ -485,8 +487,38 @@ async def mum(interaction: discord.Interaction) -> None:
 _son_muzik_tetigi: Optional[datetime] = None
 
 
+async def _sese_gir() -> Optional[discord.Guild]:
+    """Botu ses kanalinda gosterir.
+
+    Jockie, komutu yazanin hangi ses kanalinda oldugna bakip oraya geliyor.
+    Bot hicbir kanalda degilse nereye gelecegini bilemiyor. Burada tam bir ses
+    baglantisi kurmuyoruz (o PyNaCl isterdi); sadece "bu kanaldayim" bilgisini
+    gonderiyoruz, Jockie icin bu yeterli.
+    """
+    kanal = get_channel(MUZIK_SES_KANALI_ID)
+    if not isinstance(kanal, discord.VoiceChannel):
+        print("[muzik] MUZIK_SES_KANALI_ID bir ses kanali degil, kanala girilemedi")
+        return None
+
+    try:
+        await kanal.guild.change_voice_state(channel=kanal, self_mute=True, self_deaf=True)
+        print(f"[muzik] ses kanalina girildi: {kanal.name}")
+        return kanal.guild
+    except Exception as exc:
+        print(f"[muzik] ses kanalina girilemedi: {exc}")
+        return None
+
+
+async def _sesten_cik(guild: discord.Guild) -> None:
+    try:
+        await guild.change_voice_state(channel=None)
+        print("[muzik] ses kanalindan cikildi")
+    except Exception as exc:
+        print(f"[muzik] ses kanalindan cikilamadi: {exc}")
+
+
 async def muzik_baslat(sebep: str) -> bool:
-    """Jockie'ye komutu yazar. Gonderebildiyse True doner."""
+    """Ses kanalina girer, Jockie'ye komutu yazar, sonra cikar."""
     global _son_muzik_tetigi
 
     kanal = get_channel(MUZIK_KOMUT_KANALI_ID)
@@ -494,14 +526,27 @@ async def muzik_baslat(sebep: str) -> bool:
         print("[muzik] MUZIK_KOMUT_KANALI_ID bir yazi kanali degil")
         return False
 
+    guild = await _sese_gir()
+    if guild is not None:
+        # Discord'un ses durumunu isleyip Jockie'nin gormesi icin kisa bir pay
+        await asyncio.sleep(1.5)
+
     try:
         await kanal.send(MUZIK_KOMUT)
         _son_muzik_tetigi = now()
         print(f"[muzik] komut gonderildi ({sebep}): {MUZIK_KOMUT}")
-        return True
+        basarili = True
     except discord.HTTPException as exc:
         print(f"[muzik] gonderilemedi: {exc}")
-        return False
+        basarili = False
+
+    # Jockie kanala yerlesene kadar bekle, sonra sessizce cekil.
+    # MUZIK_CIKIS_SN = 0 ise bot kanalda kalir.
+    if guild is not None and MUZIK_CIKIS_SN > 0:
+        await asyncio.sleep(MUZIK_CIKIS_SN)
+        await _sesten_cik(guild)
+
+    return basarili
 
 
 @bot.event
