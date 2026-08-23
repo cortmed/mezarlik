@@ -1,1 +1,2 @@
-discord.py>=2.4,<3
+discord.py[voice]>=2.4,<3
+yt-dlp>=2025.1.15
