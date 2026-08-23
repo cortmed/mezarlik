@@ -103,13 +103,11 @@ def emoji_gorsel(raw: str) -> Optional[str]:
 # Once elle verilen GIF, yoksa MUM_EMOJI'den turetilen gorsel
 MUM_GORSEL = KITABE_GIF_URL or emoji_gorsel(MUM_EMOJI)
 
-# Muzik tetigi (opsiyonel). Ucu de doldurulmazsa ozellik kapali kalir.
-MUZIK_SES_KANALI_ID = _env_int("MUZIK_SES_KANALI_ID", required=False)   # izlenecek ses kanali
-MUZIK_KOMUT_KANALI_ID = _env_int("MUZIK_KOMUT_KANALI_ID", required=False)  # komutun yazilacagi yazi kanali
-MUZIK_KOMUT = _env("MUZIK_KOMUT", required=False)  # ornek: m!play https://youtu.be/xxxx
-MUZIK_BEKLEME_SN = int(_env("MUZIK_BEKLEME_SN", required=False, default="300"))
-# Komuttan sonra bot kanalda kac saniye dursun. 0 = hic cikmasin.
-MUZIK_CIKIS_SN = int(_env("MUZIK_CIKIS_SN", required=False, default="15"))
+# Muzik (opsiyonel). Ikisi de doldurulmazsa ozellik kapali kalir.
+MUZIK_SES_KANALI_ID = _env_int("MUZIK_SES_KANALI_ID", required=False)  # izlenecek ses kanali
+MUZIK_URL = _env("MUZIK_URL", required=False)  # YouTube linki ya da dogrudan ses dosyasi adresi
+MUZIK_DONGU = _env("MUZIK_DONGU", required=False, default="1") != "0"  # bitince bastan alsin mi
+MUZIK_SES_SEVIYESI = float(_env("MUZIK_SES_SEVIYESI", required=False, default="0.5"))
 
 STATE_FILENAME = "mezarlik-state.json"
 MAX_QUOTES = 500
@@ -481,72 +479,101 @@ async def mum(interaction: discord.Interaction) -> None:
         print(f"[mum] animasyon tamamlanamadi: {exc}")
 
 
-# ---------------------------------------------------------------- muzik tetigi
+# ---------------------------------------------------------------- muzik
 
 
-_son_muzik_tetigi: Optional[datetime] = None
+YTDL_AYARLARI = {
+    "format": "bestaudio/best",
+    "quiet": True,
+    "no_warnings": True,
+    "noplaylist": True,
+    "default_search": "auto",
+    "source_address": "0.0.0.0",   # bazi aglarda IPv6 yuzunden takiliyor
+}
+
+FFMPEG_AYARLARI = {
+    # Akis koparsa ffmpeg kendi kendine yeniden baglansin
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "options": "-vn",
+}
 
 
-async def _sese_gir() -> Optional[discord.Guild]:
-    """Botu ses kanalinda gosterir.
+def _ses_kaynagi(url: str) -> tuple[str, str]:
+    """YouTube linkinden dogrudan ses akisi adresini cikarir.
 
-    Jockie, komutu yazanin hangi ses kanalinda oldugna bakip oraya geliyor.
-    Bot hicbir kanalda degilse nereye gelecegini bilemiyor. Burada tam bir ses
-    baglantisi kurmuyoruz (o PyNaCl isterdi); sadece "bu kanaldayim" bilgisini
-    gonderiyoruz, Jockie icin bu yeterli.
+    yt_dlp aglar uzerinden is yaptigi icin bloke edici; cagiran taraf bunu
+    executor'da calistiriyor ki botun geri kalani donmasin.
     """
-    kanal = get_channel(MUZIK_SES_KANALI_ID)
-    if not isinstance(kanal, discord.VoiceChannel):
-        print("[muzik] MUZIK_SES_KANALI_ID bir ses kanali degil, kanala girilemedi")
-        return None
+    import yt_dlp
 
-    try:
-        await kanal.guild.change_voice_state(channel=kanal, self_mute=True, self_deaf=True)
-        print(f"[muzik] ses kanalina girildi: {kanal.name}")
-        return kanal.guild
-    except Exception as exc:
-        print(f"[muzik] ses kanalina girilemedi: {exc}")
-        return None
+    with yt_dlp.YoutubeDL(YTDL_AYARLARI) as ydl:
+        bilgi = ydl.extract_info(url, download=False)
+    if "entries" in bilgi:
+        bilgi = bilgi["entries"][0]
+    return bilgi["url"], bilgi.get("title", "bilinmeyen parca")
 
 
-async def _sesten_cik(guild: discord.Guild) -> None:
-    try:
-        await guild.change_voice_state(channel=None)
-        print("[muzik] ses kanalindan cikildi")
-    except Exception as exc:
-        print(f"[muzik] ses kanalindan cikilamadi: {exc}")
+def _kanaldaki_insanlar(kanal: discord.VoiceChannel) -> int:
+    return len([uye for uye in kanal.members if not uye.bot])
 
 
-async def muzik_baslat(sebep: str) -> bool:
-    """Ses kanalina girer, Jockie'ye komutu yazar, sonra cikar."""
-    global _son_muzik_tetigi
-
-    kanal = get_channel(MUZIK_KOMUT_KANALI_ID)
-    if not isinstance(kanal, discord.TextChannel):
-        print("[muzik] MUZIK_KOMUT_KANALI_ID bir yazi kanali degil")
+async def muzik_cal(kanal: discord.VoiceChannel, sebep: str) -> bool:
+    """Bota kanala girip parcayi caldirir."""
+    if not MUZIK_URL:
+        print("[muzik] MUZIK_URL bos")
         return False
 
-    guild = await _sese_gir()
-    if guild is not None:
-        # Discord'un ses durumunu isleyip Jockie'nin gormesi icin kisa bir pay
-        await asyncio.sleep(1.5)
+    ses = kanal.guild.voice_client
+    if ses is not None and ses.is_playing():
+        print("[muzik] zaten caliyor")
+        return False
 
     try:
-        await kanal.send(MUZIK_KOMUT)
-        _son_muzik_tetigi = now()
-        print(f"[muzik] komut gonderildi ({sebep}): {MUZIK_KOMUT}")
-        basarili = True
-    except discord.HTTPException as exc:
-        print(f"[muzik] gonderilemedi: {exc}")
-        basarili = False
+        akis, baslik = await asyncio.get_running_loop().run_in_executor(
+            None, _ses_kaynagi, MUZIK_URL
+        )
+    except Exception as exc:
+        print(f"[muzik] kaynak cozulemedi: {exc}")
+        return False
 
-    # Jockie kanala yerlesene kadar bekle, sonra sessizce cekil.
-    # MUZIK_CIKIS_SN = 0 ise bot kanalda kalir.
-    if guild is not None and MUZIK_CIKIS_SN > 0:
-        await asyncio.sleep(MUZIK_CIKIS_SN)
-        await _sesten_cik(guild)
+    try:
+        if ses is None:
+            ses = await kanal.connect()
+        elif ses.channel != kanal:
+            await ses.move_to(kanal)
+    except Exception as exc:
+        print(f"[muzik] kanala baglanilamadi: {exc}")
+        return False
 
-    return basarili
+    def bitince(hata: Optional[Exception]) -> None:
+        if hata:
+            print(f"[muzik] calma hatasi: {hata}")
+        # Kimse kalmadiysa cik, kaldiysa ve dongu aciksa bastan al
+        if MUZIK_DONGU and _kanaldaki_insanlar(kanal) > 0:
+            bot.loop.create_task(muzik_cal(kanal, "dongu"))
+        else:
+            bot.loop.create_task(muzik_dur(kanal.guild))
+
+    kaynak = discord.PCMVolumeTransformer(
+        discord.FFmpegPCMAudio(akis, **FFMPEG_AYARLARI),
+        volume=MUZIK_SES_SEVIYESI,
+    )
+    ses.play(kaynak, after=bitince)
+    print(f"[muzik] caliyor ({sebep}): {baslik}")
+    return True
+
+
+async def muzik_dur(guild: discord.Guild) -> None:
+    ses = guild.voice_client
+    if ses is None:
+        return
+    try:
+        if ses.is_playing():
+            ses.stop()
+        await ses.disconnect(force=True)
+        print("[muzik] durduruldu, kanaldan cikildi")
+    except Exception as exc:
+        print(f"[muzik] cikilamadi: {exc}")
 
 
 @bot.event
@@ -555,60 +582,66 @@ async def on_voice_state_update(
     before: discord.VoiceState,
     after: discord.VoiceState,
 ) -> None:
-    if not (MUZIK_SES_KANALI_ID and MUZIK_KOMUT_KANALI_ID and MUZIK_KOMUT):
+    if not (MUZIK_SES_KANALI_ID and MUZIK_URL):
         return
-
-    # Jockie'nin kendi girisi tekrar tetiklemesin
     if member.bot:
         return
 
-    # Hedef kanala giris mi?
-    if after.channel is None or after.channel.id != MUZIK_SES_KANALI_ID:
+    kanal = get_channel(MUZIK_SES_KANALI_ID)
+    if not isinstance(kanal, discord.VoiceChannel):
+        print("[muzik] MUZIK_SES_KANALI_ID bir ses kanali degil")
         return
 
-    # Ayni kanaldaysa sadece mikrofon/kamera degismistir, giris degil
-    if before.channel is not None and before.channel.id == after.channel.id:
+    girdi = after.channel is not None and after.channel.id == MUZIK_SES_KANALI_ID
+    ayni_kanalda_kaldi = (
+        before.channel is not None
+        and after.channel is not None
+        and before.channel.id == after.channel.id
+    )
+
+    # Odaya ilk giren muzigi baslatir
+    if girdi and not ayni_kanalda_kaldi:
+        if _kanaldaki_insanlar(kanal) == 1:
+            await muzik_cal(kanal, f"{member.display_name} odaya girdi")
         return
 
-    # Sadece odayi ilk acan kisi tetiklesin; ikinci kisi girince muzik zaten caliyordur
-    insanlar = [uye for uye in after.channel.members if not uye.bot]
-    if len(insanlar) != 1:
-        return
-
-    # Kisa araliklarla girip cikmalar Jockie'yi bogmasin
-    if _son_muzik_tetigi is not None:
-        gecen = (now() - _son_muzik_tetigi).total_seconds()
-        if gecen < MUZIK_BEKLEME_SN:
-            print(f"[muzik] bekleme suresi doldurulmadi ({int(gecen)}s)")
-            return
-
-    await muzik_baslat(f"{member.display_name} odaya girdi")
+    # Son kisi de ciktiysa bot bos odada calmaya devam etmesin
+    ciktti = before.channel is not None and before.channel.id == MUZIK_SES_KANALI_ID
+    if ciktti and not girdi and _kanaldaki_insanlar(kanal) == 0:
+        await muzik_dur(kanal.guild)
 
 
 @bot.tree.command(
     name="muzik-dene",
-    description="Müzik komutunu hemen gönderir, Jockie tepki veriyor mu diye bakar (yönetici)",
+    description="Müziği hemen başlatır (yönetici)",
     guild=GUILD,
 )
 @app_commands.checks.has_permissions(manage_guild=True)
 async def muzik_dene(interaction: discord.Interaction) -> None:
-    if not (MUZIK_KOMUT_KANALI_ID and MUZIK_KOMUT):
+    kanal = get_channel(MUZIK_SES_KANALI_ID)
+    if not isinstance(kanal, discord.VoiceChannel) or not MUZIK_URL:
         await interaction.response.send_message(
-            "Müzik tetiği kapalı. Railway'de `MUZIK_KOMUT_KANALI_ID` ve `MUZIK_KOMUT` "
-            "değişkenlerini doldurman lazım.",
+            "Müzik kapalı. Railway'de `MUZIK_SES_KANALI_ID` ve `MUZIK_URL` doldurulmalı.",
             ephemeral=True,
         )
         return
 
     await interaction.response.defer(ephemeral=True)
-    ok = await muzik_baslat("elle test")
+    ok = await muzik_cal(kanal, "elle test")
     await interaction.followup.send(
-        "📨 Komut gönderildi. Kanala bak — Jockie cevap verdiyse çalışıyor, "
-        "hiç tepki vermediyse bot komutlarını görmezden geliyor demektir."
+        f"🎵 Başladı — **{kanal.name}** kanalına bak."
         if ok
-        else "Gönderilemedi, Deploy Logs'taki `[muzik]` satırına bak.",
+        else "Başlatılamadı, Deploy Logs'taki `[muzik]` satırına bak.",
         ephemeral=True,
     )
+
+
+@bot.tree.command(name="muzik-dur", description="Müziği durdurur (yönetici)", guild=GUILD)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def muzik_dur_komut(interaction: discord.Interaction) -> None:
+    assert interaction.guild is not None
+    await muzik_dur(interaction.guild)
+    await interaction.response.send_message("⏹️ Durduruldu.", ephemeral=True)
 
 
 # ---------------------------------------------------------------- 4) son gorulme
