@@ -130,8 +130,10 @@ class State:
 
     def __init__(self) -> None:
         self.candles: int = 0
-        self.candle_lighters: list[int] = []
+        self.candle_counts: dict[str, int] = {}   # kullanici id -> yaktigi mum
         self.yasin: int = 0
+        self.yasin_counts: dict[str, int] = {}   # kimin hayrina kac yasin okundu
+        self.hayir_counts: dict[str, int] = {}   # kim adina kac hayir islendi
         self.quotes: list[str] = []
         self.used_quotes: list[int] = []
         self.last_message_at: Optional[str] = None   # sayac bunu kullanir
@@ -146,8 +148,10 @@ class State:
     def to_dict(self) -> dict[str, Any]:
         return {
             "candles": self.candles,
-            "candle_lighters": self.candle_lighters,
+            "candle_counts": self.candle_counts,
             "yasin": self.yasin,
+            "yasin_counts": self.yasin_counts,
+            "hayir_counts": self.hayir_counts,
             "quotes": self.quotes,
             "used_quotes": self.used_quotes,
             "last_message_at": self.last_message_at,
@@ -158,8 +162,14 @@ class State:
 
     def from_dict(self, data: dict[str, Any]) -> None:
         self.candles = int(data.get("candles", 0))
-        self.candle_lighters = list(data.get("candle_lighters", []))
+        self.candle_counts = {str(k): int(v) for k, v in data.get("candle_counts", {}).items()}
+        # Eski kayitlarda sadece "kim ugradi" listesi vardi; herkese bir mum yazarak tasi
+        if not self.candle_counts:
+            for eski in data.get("candle_lighters", []):
+                self.candle_counts[str(eski)] = 1
         self.yasin = int(data.get("yasin", 0))
+        self.yasin_counts = {str(k): int(v) for k, v in data.get("yasin_counts", {}).items()}
+        self.hayir_counts = {str(k): int(v) for k, v in data.get("hayir_counts", {}).items()}
         self.quotes = list(data.get("quotes", []))
         self.used_quotes = list(data.get("used_quotes", []))
         self.last_message_at = data.get("last_message_at")
@@ -415,7 +425,7 @@ def kitabe_embed() -> discord.Embed:
         title="🕯️ Anma Mumları",
         description=(
             f"Bugüne kadar **{state.candles}** mum yakıldı.\n"
-            f"**{len(state.candle_lighters)}** kişi uğradı."
+            f"**{len(state.candle_counts)}** kişi uğradı."
         ),
         colour=discord.Colour.from_str("#C9A35A"),
     )
@@ -455,9 +465,9 @@ async def refresh_kitabe() -> None:
 @bot.tree.command(name="mum", description="Oğuzhan için bir mum yak", guild=GUILD)
 async def mum(interaction: discord.Interaction) -> None:
     state.candles += 1
-    ilk_kez = interaction.user.id not in state.candle_lighters
-    if ilk_kez:
-        state.candle_lighters.append(interaction.user.id)
+    anahtar = str(interaction.user.id)
+    ilk_kez = anahtar not in state.candle_counts
+    state.candle_counts[anahtar] = state.candle_counts.get(anahtar, 0) + 1
 
     await persist()
     await refresh_kitabe()
@@ -691,12 +701,18 @@ async def yasin_bitti(kanal: discord.VoiceChannel) -> None:
     if not isinstance(hedef, discord.abc.Messageable):
         hedef = kanal
 
+    # Okunan yasin, o an kanalda bulunanlarin hayrina yazilir
+    for uye in insanlar:
+        anahtar = str(uye.id)
+        state.yasin_counts[anahtar] = state.yasin_counts.get(anahtar, 0) + 1
+    await persist()
+
     etiketler = " ".join(uye.mention for uye in insanlar)
     metin = (
-        f"{etiketler}\n\n"
-        "🕯️ Oğuzhan Baki'nin ruhuna bir adet Yasin okundu. Allah kabul etsin.\n"
-        f"_Bugüne kadar okunan: {state.yasin}_\n\n"
-        "Bir tane daha okumamı ister misin?"
+        "🕯️ Bir adet Yasin okundu.\n\n"
+        f"**Hayrına yazılanlar:** {etiketler}\n"
+        f"_Merkezde bugüne kadar okunan: {state.yasin}_\n\n"
+        "Allah kabul etsin. Bir tane daha okumamı ister misin?"
     )
 
     gorunum = YasinSorusu(kanal)
@@ -921,6 +937,243 @@ async def arsiv_tara(interaction: discord.Interaction, kanal_basina: int = 0) ->
         ozet.append("⚠️ Hiç mesajı bulunamadı — gün sayacı çalışmaz. "
                     "`FALLBACK_LAST_MESSAGE` değişkenine elle bir tarih girin.")
     await interaction.followup.send("\n".join(ozet), ephemeral=True)
+
+
+# ---------------------------------------------------------------- eglence
+
+
+OLUM_SEBEPLERI = [
+    "3 saat AFK kaldı, kimse fark etmedi",
+    "\"5 dk sonra geliyorum\" dedi",
+    "Sesli kanala girdi, kimse yoktu",
+    "Bildirimleri kapattı, geri açmayı unuttu",
+    "Son maç dedi, sabah oldu",
+    "Mikrofonu açık uyuyakaldı",
+    "Güncelleme bekliyordu",
+    "Wi-Fi'ye yenik düştü",
+    "Ranked maçta son nefesini verdi",
+    "Ekran paylaşımını kapatmayı unuttu, utancından gitti",
+    "Yanlış kanala yazdı, bir daha yüzü tutmadı",
+    "Şarj aleti uzaktaydı",
+]
+
+KITABE_SOZLERI = [
+    "Buralarda bir yerlerde, hâlâ yükleniyor.",
+    "Sessizliğe karıştı.",
+    "Ping'i sonsuza kadar 999.",
+    "Toprağı bol, pingi düşük olsun.",
+    "Bir daha çevrimiçi görünmedi.",
+    "Çevrimdışı, ama unutulmadı.",
+    "Son görülme: çok oldu.",
+]
+
+AGITLAR = [
+    "Kanallar boş, sesler kısık,\nBir isim eksik listede — hep eksik.",
+    "Girdi çıktı bu sunucuya nice yiğit,\nAma hiçbiri senin kadar sessiz gitmedi.",
+    "Sabah olur, akşam olur, bildirim gelmez,\nO yeşil nokta bir daha yanmaz.",
+    "Ne bir mesaj, ne bir tepki, ne bir ses,\nMezarlıkta yalnız rüzgâr eser.",
+    "Herkes bir gün gider derler,\nAma sen gitmedin — sadece çevrimdışı oldun.",
+    "Oyunlar oynandı sensiz, maçlar kaybedildi,\nHer yenilgide adın anıldı.",
+    "Bir zamanlar bu kanallar senin sesinle dolardı,\nŞimdi sadece yankısı var.",
+    "Toprak ağır değil, internet yavaş sadece.\nBekliyoruz, hâlâ bekliyoruz.",
+]
+
+
+def _kisiye_ozel_rastgele(kisi_id: int, tohum: str) -> random.Random:
+    """Ayni kisiye hep ayni sonucu vermek icin sabit tohumlu uretec."""
+    return random.Random(f"{tohum}:{kisi_id}")
+
+
+@bot.tree.command(name="mezar-kaz", description="Toprağı kaz, arşivden bir söz çıkar", guild=GUILD)
+async def mezar_kaz(interaction: discord.Interaction) -> None:
+    if not state.quotes:
+        await interaction.response.send_message(
+            "Toprak boş — arşiv henüz doldurulmamış.", ephemeral=True
+        )
+        return
+
+    soz = random.choice(state.quotes)
+    embed = discord.Embed(
+        title="⛏️ Toprağı kazdın",
+        description=f"Çıkan şey:\n\n> {soz}",
+        colour=discord.Colour.from_str("#7FA587"),
+    )
+    embed.set_footer(text=f"Arşivde {len(state.quotes)} söz gömülü")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="sirala", description="En çok mum yakanlar", guild=GUILD)
+async def sirala(interaction: discord.Interaction) -> None:
+    if not state.candle_counts:
+        await interaction.response.send_message(
+            "Henüz kimse mum yakmadı.", ephemeral=True
+        )
+        return
+
+    siralama = sorted(state.candle_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+    madalya = ["🥇", "🥈", "🥉"]
+
+    satirlar = []
+    for sira, (uye_id, adet) in enumerate(siralama):
+        isaret = madalya[sira] if sira < 3 else f"`{sira + 1}.`"
+        satirlar.append(f"{isaret} <@{uye_id}> — **{adet}** mum")
+
+    embed = discord.Embed(
+        title="🕯️ Mezarlığın Sadıkları",
+        description="\n".join(satirlar),
+        colour=discord.Colour.from_str("#C9A35A"),
+    )
+    embed.set_footer(text=f"Toplam {state.candles} mum · {len(state.candle_counts)} ziyaretçi")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="mezar-tasi", description="Birine mezar taşı diker", guild=GUILD)
+@app_commands.describe(kisi="Mezar taşı dikilecek kişi")
+async def mezar_tasi(interaction: discord.Interaction, kisi: discord.Member) -> None:
+    # Kisiye ozel ama sabit: ayni kisinin mezar tasi hep ayni kalsin
+    uretec = _kisiye_ozel_rastgele(kisi.id, "mezar-tasi")
+    sebep = uretec.choice(OLUM_SEBEPLERI)
+    soz = uretec.choice(KITABE_SOZLERI)
+
+    embed = discord.Embed(
+        title="🪦 Burada Yatıyor",
+        description=(
+            f"### {kisi.display_name}\n"
+            f"_{soz}_\n\n"
+            f"**Ölüm sebebi:** {sebep}"
+        ),
+        colour=discord.Colour.from_str("#4B5058"),
+    )
+    embed.set_thumbnail(url=kisi.display_avatar.url)
+    embed.set_footer(text=f"{interaction.user.display_name} tarafından dikildi")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="agit", description="Oğuzhan için bir ağıt yakar", guild=GUILD)
+async def agit(interaction: discord.Interaction) -> None:
+    embed = discord.Embed(
+        description=f"🥀\n\n*{random.choice(AGITLAR)}*",
+        colour=discord.Colour.from_str("#8C4A44"),
+    )
+    embed.set_footer(text=f"— {interaction.user.display_name}")
+    await interaction.response.send_message(embed=embed)
+
+
+YORICK_SOZLERI = [
+    "Vah zavallı Yorick! Onu tanırdım, sonsuz nükte sahibi bir adamdı.",
+    "Bir kafatası tuttum elimde, bana baktı ve hiçbir şey demedi. Tam bir sohbet arkadaşı.",
+    "Şu kafatası bir zamanlar sesli kanalda en çok konuşandı.",
+    "Herkes bir gün kafatası olur, mesele kimin elinde olacağın.",
+    "Yorick sustu, ama sunucu susmadı.",
+    "Bu kafatası hiç bildirim açmadı, huzuru öyle buldu.",
+    "Ölüm, ping'in sonsuza kadar sabitlenmesidir.",
+]
+
+ANIT_YAZILARI = [
+    "adına dikilmiştir, sebebi kimse hatırlamıyor",
+    "anısına — henüz ölmedi ama hazırlık iyidir",
+    "onuruna dikildi, kendisine sorulmadı",
+    "için yapıldı, masraflar ortak kasadan karşılandı",
+    "adına — bir gün gerekir",
+]
+
+HAYIR_ISLERI = [
+    "bir sokak kedisi doyuruldu",
+    "bir yaşlıya yol tarif edildi",
+    "kimseye küfredilmedi (bugünlük)",
+    "bir arkadaşın mesajı görmezden gelinmedi",
+    "sesli kanalda mikrofon kapatıldı",
+    "bir ranked maç sonunda kimse suçlanmadı",
+    "birine 'geçmiş olsun' yazıldı",
+    "bir mesaj atılmadan önce iki kere düşünüldü",
+    "spoiler verilmedi",
+    "bir tartışma büyümeden bitirildi",
+]
+
+
+@bot.tree.command(name="kafatasi", description="Yorick'i eline al", guild=GUILD)
+async def kafatasi(interaction: discord.Interaction) -> None:
+    embed = discord.Embed(
+        title="💀",
+        description=f"*{random.choice(YORICK_SOZLERI)}*",
+        colour=discord.Colour.from_str("#DCD7CB"),
+    )
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="anit", description="Bugün anıt kimin adına dikili?", guild=GUILD)
+async def anit(interaction: discord.Interaction) -> None:
+    guild = interaction.guild
+    if guild is None:
+        return
+
+    adaylar = [uye for uye in guild.members if not uye.bot]
+    if not adaylar:
+        await interaction.response.send_message("Aday yok.", ephemeral=True)
+        return
+
+    # Gune gore sabit: anit gun boyunca ayni kisinin, ertesi gun degisir
+    bugun = now().astimezone(TZ).strftime("%Y-%m-%d")
+    uretec = random.Random(f"anit:{bugun}:{guild.id}")
+    secilen = uretec.choice(adaylar)
+    yazi = uretec.choice(ANIT_YAZILARI)
+
+    embed = discord.Embed(
+        title="🗿 İsimsiz Anıt",
+        description=f"Bugün bu anıt **{secilen.display_name}** {yazi}.",
+        colour=discord.Colour.from_str("#8E8B81"),
+    )
+    embed.set_thumbnail(url=secilen.display_avatar.url)
+    embed.set_footer(text="Yarın başkasının olacak")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="hayir", description="Birinin adına bir hayır işle", guild=GUILD)
+@app_commands.describe(kisi="Hayrın kimin adına yazılacağı")
+async def hayir(interaction: discord.Interaction, kisi: discord.Member) -> None:
+    anahtar = str(kisi.id)
+    state.hayir_counts[anahtar] = state.hayir_counts.get(anahtar, 0) + 1
+    await persist()
+
+    embed = discord.Embed(
+        title="🤲 Hayır İşlendi",
+        description=(
+            f"**{kisi.display_name}** adına {random.choice(HAYIR_ISLERI)}.\n\n"
+            f"Toplam hayrı: **{state.hayir_counts[anahtar]}**"
+        ),
+        colour=discord.Colour.from_str("#7FA587"),
+    )
+    embed.set_footer(text=f"{interaction.user.display_name} vesile oldu")
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="karne", description="Merkezdeki sicilini gösterir", guild=GUILD)
+@app_commands.describe(kisi="Kimin karnesi (boş bırakırsan senin)")
+async def karne(interaction: discord.Interaction, kisi: Optional[discord.Member] = None) -> None:
+    hedef = kisi or interaction.user
+    anahtar = str(hedef.id)
+
+    okunan = state.yasin_counts.get(anahtar, 0)
+    hayirlar = state.hayir_counts.get(anahtar, 0)
+    mumlar = state.candle_counts.get(anahtar, 0)
+
+    if okunan == 0 and hayirlar == 0 and mumlar == 0:
+        durum = "Sicili tertemiz. Ya çok iyi biri, ya da hiç uğramamış."
+    elif okunan > hayirlar:
+        durum = "Hakkında okunan, adına işlenenden fazla. Endişe verici."
+    else:
+        durum = "Durumu iyi görünüyor."
+
+    embed = discord.Embed(
+        title=f"📋 {hedef.display_name} — Sicil",
+        description=f"_{durum}_",
+        colour=discord.Colour.from_str("#4E6B56"),
+    )
+    embed.add_field(name="Hayrına okunan Yasin", value=str(okunan), inline=True)
+    embed.add_field(name="Adına işlenen hayır", value=str(hayirlar), inline=True)
+    embed.add_field(name="Yaktığı mum", value=str(mumlar), inline=True)
+    embed.set_thumbnail(url=hedef.display_avatar.url)
+    await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name="mezarlik", description="Mezarlığın durumu", guild=GUILD)
