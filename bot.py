@@ -321,6 +321,9 @@ async def persist() -> None:
 # ---------------------------------------------------------------- 1) gun sayaci
 
 
+_son_yazilan_sayac_adi: Optional[str] = None
+
+
 @tasks.loop(hours=6)
 async def gun_sayaci() -> None:
     """Ses kanalinin adini gunceller.
@@ -339,11 +342,17 @@ async def gun_sayaci() -> None:
         return
 
     yeni_ad = COUNTER_TEMPLATE.format(gun=gun)
-    if channel.name == yeni_ad:
+
+    # channel.name onbellekten geliyor ve edit'ten hemen sonra tazelenmeyebiliyor.
+    # Son yazdigimiz adi ayrica hatirliyoruz, yoksa ayni ismi tekrar tekrar yazip
+    # Discord'un "10 dakikada 2 yeniden adlandirma" kotasini bosa harciyoruz.
+    global _son_yazilan_sayac_adi
+    if channel.name == yeni_ad or _son_yazilan_sayac_adi == yeni_ad:
         return
 
     try:
         await channel.edit(name=yeni_ad, reason="Mezarlik gun sayaci")
+        _son_yazilan_sayac_adi = yeni_ad
         print(f"[sayac] kanal adi guncellendi: {yeni_ad}")
     except discord.Forbidden:
         print("[sayac] yetki yok — bota 'Kanalları Yönet' izni verin")
