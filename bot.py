@@ -120,6 +120,7 @@ YASIN_SORU_SN = int(_env("YASIN_SORU_SN", required=False, default="600"))
 
 STATE_FILENAME = "mezarlik-state.json"
 MAX_QUOTES = 500
+MAX_KAZI = 1500   # kazi arsivinde en fazla kac soz dursun
 
 
 # ---------------------------------------------------------------- durum
@@ -134,8 +135,9 @@ class State:
         self.yasin: int = 0
         self.yasin_counts: dict[str, int] = {}   # kimin hayrina kac yasin okundu
         self.hayir_counts: dict[str, int] = {}   # kim adina kac hayir islendi
-        self.quotes: list[str] = []
+        self.quotes: list[str] = []          # sadece hedef kisinin sozleri (hayalet icin)
         self.used_quotes: list[int] = []
+        self.dug_quotes: list[dict[str, str]] = []   # herkesin sozleri: {"u": id, "t": metin}
         self.last_message_at: Optional[str] = None   # sayac bunu kullanir
         self.last_online_at: Optional[str] = None    # son gorulme bunu kullanir
         self.kitabe_message_id: Optional[int] = None
@@ -154,6 +156,7 @@ class State:
             "hayir_counts": self.hayir_counts,
             "quotes": self.quotes,
             "used_quotes": self.used_quotes,
+            "dug_quotes": self.dug_quotes,
             "last_message_at": self.last_message_at,
             "last_online_at": self.last_online_at,
             "kitabe_message_id": self.kitabe_message_id,
@@ -172,6 +175,11 @@ class State:
         self.hayir_counts = {str(k): int(v) for k, v in data.get("hayir_counts", {}).items()}
         self.quotes = list(data.get("quotes", []))
         self.used_quotes = list(data.get("used_quotes", []))
+        self.dug_quotes = [
+            {"u": str(k.get("u", "")), "t": str(k.get("t", ""))}
+            for k in data.get("dug_quotes", [])
+            if k.get("t")
+        ]
         self.last_message_at = data.get("last_message_at")
         self.last_online_at = data.get("last_online_at")
         self.kitabe_message_id = data.get("kitabe_message_id")
@@ -955,27 +963,134 @@ OLUM_SEBEPLERI = [
     "Ekran paylaşımını kapatmayı unuttu, utancından gitti",
     "Yanlış kanala yazdı, bir daha yüzü tutmadı",
     "Şarj aleti uzaktaydı",
+    "Sesli mesaj attı, geri dönüşü olmadı",
+    "Grup fotoğrafında gözü kapalı çıktı, dayanamadı",
+    "\"Ben gelmiyorum\" dedi, gerçekten gelmedi",
+    "Sabah 6'da yatarken \"erken kalkacağım\" dedi",
+    "Kendi mesajına kendi tepki verdi",
+    "Ping'i 300'ü geçti, ruhu bedeninden ayrıldı",
+    "Yanlışlıkla @everyone attı",
+    "Bir tartışmayı kazandı ama kimseyi ikna edemedi",
+    "Emoji ile cevap verdi, muhabbet orada bitti",
+    "Sesli kanalda yalnız kaldı, kendi kendine konuştu",
+    "Deneme mesajını herkese açık kanala attı",
+    "İnternet kesildi, bir daha bağlanmadı",
+    "Klavyesine su döktü, iki tuş gitti, o da gitti",
+    "\"Bir dakika\" dedi, kırk dakika oldu",
+    "Sesli kanaldan çıkarken kapıyı çarptı",
+    "Herkes uyudu sandı, uyumamışlar",
 ]
 
 KITABE_SOZLERI = [
-    "Buralarda bir yerlerde, hâlâ yükleniyor.",
-    "Sessizliğe karıştı.",
-    "Ping'i sonsuza kadar 999.",
-    "Toprağı bol, pingi düşük olsun.",
-    "Bir daha çevrimiçi görünmedi.",
-    "Çevrimdışı, ama unutulmadı.",
-    "Son görülme: çok oldu.",
+    "Buralarda bir yerlerde, hâlâ yükleniyor. ⏳",
+    "Sessizliğe karıştı. 🌫️",
+    "Ping'i sonsuza kadar 999. 📡",
+    "Toprağı bol, pingi düşük olsun. 🕯️",
+    "Bir daha çevrimiçi görünmedi. 🔌",
+    "Çevrimdışı, ama unutulmadı. 🥀",
+    "Son görülme: çok oldu. ⌛",
+    "Klavyesi soğudu. ⌨️",
+    "Mikrofonu kapandı, sesi kaldı. 🎙️",
+    "Yükleme çubuğu %99'da durdu. 📶",
+    "Bildirimleri hâlâ birikiyor. 🔔",
+    "Adı listede, kendisi yok. 📋",
+    "Gitti ama okundu bilgisi hiç gelmedi. ✔️",
+    "Burada yatan zat, en son \"geliyorum\" demişti. 🚪",
+    "Sunucu onsuz da döndü, ama aynı olmadı. 🌍",
+    "Yeşil nokta bir daha yanmadı. 🟢",
 ]
 
 AGITLAR = [
-    "Kanallar boş, sesler kısık,\nBir isim eksik listede — hep eksik.",
-    "Girdi çıktı bu sunucuya nice yiğit,\nAma hiçbiri senin kadar sessiz gitmedi.",
-    "Sabah olur, akşam olur, bildirim gelmez,\nO yeşil nokta bir daha yanmaz.",
-    "Ne bir mesaj, ne bir tepki, ne bir ses,\nMezarlıkta yalnız rüzgâr eser.",
-    "Herkes bir gün gider derler,\nAma sen gitmedin — sadece çevrimdışı oldun.",
-    "Oyunlar oynandı sensiz, maçlar kaybedildi,\nHer yenilgide adın anıldı.",
-    "Bir zamanlar bu kanallar senin sesinle dolardı,\nŞimdi sadece yankısı var.",
-    "Toprak ağır değil, internet yavaş sadece.\nBekliyoruz, hâlâ bekliyoruz.",
+    "Kanallar boş, sesler kısık,\nBir isim eksik listede — hep eksik. 🥀",
+    "Girdi çıktı bu sunucuya nice yiğit,\nAma hiçbiri senin kadar sessiz gitmedi. 🕯️",
+    "Sabah olur, akşam olur, bildirim gelmez,\nO yeşil nokta bir daha yanmaz. 🟢",
+    "Ne bir mesaj, ne bir tepki, ne bir ses,\nMezarlıkta yalnız rüzgâr eser. 🌬️",
+    "Herkes bir gün gider derler,\nAma sen gitmedin — sadece çevrimdışı oldun. 🔌",
+    "Oyunlar oynandı sensiz, maçlar kaybedildi,\nHer yenilgide adın anıldı. 🎮",
+    "Bir zamanlar bu kanallar senin sesinle dolardı,\nŞimdi sadece yankısı var. 📢",
+    "Toprak ağır değil, internet yavaş sadece.\nBekliyoruz, hâlâ bekliyoruz. ⏳",
+    "Ey gidenlerin en sessizi,\nGidişin bile bildirim vermedi. 🔕",
+    "Sunucunun en üstünde adın yazardı,\nŞimdi listenin dibinde, gri bir harf. 🩶",
+    "Kaç kere yazdım, kaç kere sildim,\nSonunda sadece bir tepki bıraktım. 💬",
+    "Mikrofonun açıktı, sözün yarımdı,\nO yarım söz hâlâ bu kanalda dolaşır. 🎙️",
+    "Ne mezar taşı yeter sana, ne bu üç satır,\nBir de üstüne 12 gün geçmiş, hesap tutmuyor. 🪦",
+    "Gidenler döner derler, dönmeyeni gördük,\nAma yine de kapıyı kilitlemedik. 🚪",
+    "Bir gün gelirsin, her şey aynı olur,\nSadece biz biraz daha yaşlanmış oluruz. 🌑",
+    "Sen yokken de güldük, ama kısık sesle.\nAyıp olmasın diye. 🤐",
+]
+
+YORICK_SOZLERI = [
+    "Vah zavallı Yorick! Onu tanırdım, sonsuz nükte sahibi bir adamdı. 💀",
+    "Bir kafatası tuttum elimde, bana baktı ve hiçbir şey demedi. Tam bir sohbet arkadaşı. 🗣️",
+    "Şu kafatası bir zamanlar sesli kanalda en çok konuşandı. 🎙️",
+    "Herkes bir gün kafatası olur, mesele kimin elinde olacağın. 🤲",
+    "Yorick sustu, ama sunucu susmadı. 📢",
+    "Bu kafatası hiç bildirim açmadı, huzuru öyle buldu. 🔕",
+    "Ölüm, ping'in sonsuza kadar sabitlenmesidir. 📡",
+    "Kafatasına baktım, kendimi gördüm. Sonra aynayı sildim. 🪞",
+    "Bu adam bir zamanlar \"son bir maç\" derdi. Son oldu. 🎮",
+    "Elimde tuttuğum şey bir kafa değil, kapatılmış bir sekme. 🗂️",
+    "Yorick'in tek pişmanlığı: o mesajı silmemiş olmak. 🗑️",
+    "Kemikler konuşmaz ama bu ekran görüntüsü konuşur. 📸",
+    "Ne krallar gördü bu kafatası, ne ranked maçlar. 👑",
+    "Yorick gülerdi. Şimdi sadece sırıtıyor. 😬",
+    "Bir gün senin kafatasın da birinin elinde şaka malzemesi olacak. 🫵",
+    "Şu boşluğa bak: bir zamanlar burada fikirler vardı. 🕳️",
+]
+
+ANIT_YAZILARI = [
+    "adına dikilmiştir, sebebi kimse hatırlamıyor 🗿",
+    "anısına — henüz ölmedi ama hazırlık iyidir ⚱️",
+    "onuruna dikildi, kendisine sorulmadı 🤷",
+    "için yapıldı, masraflar ortak kasadan karşılandı 💸",
+    "adına — bir gün gerekir 📅",
+    "şerefine dikildi, şerefi hakkında bilgi yok 🎖️",
+    "hatırasına — hatıra henüz oluşmadı 🌫️",
+    "adına dikildi çünkü sıra ondaydı 🎲",
+    "için ayrıldı, iptal edilemedi 🧾",
+    "namına — itiraz eden olmadı 🤐",
+    "adına dikildi, açılışa kendisi gelmedi 🎗️",
+    "anısına — anı yok ama taş hazırdı 🪨",
+    "için yapıldı, tabelası yanlış yazıldı, öyle kaldı 🔤",
+    "adına — komisyon oybirliğiyle karar verdi (komisyon: iki kişi) 🗳️",
+]
+
+HAYIR_ISLERI = [
+    "bir sokak kedisi doyuruldu 🐈",
+    "bir yaşlıya yol tarif edildi 🧭",
+    "kimseye küfredilmedi (bugünlük) 🤐",
+    "bir arkadaşın mesajı görmezden gelinmedi 💬",
+    "sesli kanalda mikrofon kapatıldı 🎙️",
+    "bir ranked maç sonunda kimse suçlanmadı 🎮",
+    "birine \"geçmiş olsun\" yazıldı 🌷",
+    "bir mesaj atılmadan önce iki kere düşünüldü 🧠",
+    "spoiler verilmedi 🤫",
+    "bir tartışma büyümeden bitirildi 🕊️",
+    "bir güvercin beslendi 🐦",
+    "birinin doğum günü unutulmadı 🎂",
+    "\"okundu\" bırakılmadı, cevap yazıldı ✍️",
+    "bir arkadaş sesli kanalda yalnız bırakılmadı 🔊",
+    "kimsenin oyun zevkiyle dalga geçilmedi 🎯",
+    "bir hata kabul edildi, savunulmadı 🙇",
+    "grup fotoğrafında kimse kırpılmadı 📸",
+    "bir bardak su içildi, şükredildi 💧",
+    "geç kalındı ama haber verildi ⏰",
+    "birinin ismi doğru yazıldı, özenle 🔤",
+    "kimse ortadan kaybolmadı, herkes çıkarken söyledi 🚪",
+    "eski bir mesaj eşelenmedi 🗄️",
+    "bir arkadaşın klibi sonuna kadar izlendi 🎬",
+    "sabah \"günaydın\" yazıldı, cevap beklenmedi ☀️",
+]
+
+KAZI_GIRISLERI = [
+    "Kürek bir şeye çarptı. ⛏️",
+    "Toprak açıldı, içinden şu çıktı: 🕳️",
+    "Üç metre kazdın, tam vazgeçecektin ki: 🪏",
+    "Bir sandık buldun. İçinde tek bir cümle vardı: 📦",
+    "Çamurun altından bu çıktı: 🪣",
+    "Kazma bir kemiğe değdi. Kemik konuştu: 🦴",
+    "Arşivin dibinde, unutulmuş bir yerde: 🗄️",
+    "Yıllar önce buraya gömülmüş: ⏳",
 ]
 
 
@@ -984,22 +1099,101 @@ def _kisiye_ozel_rastgele(kisi_id: int, tohum: str) -> random.Random:
     return random.Random(f"{tohum}:{kisi_id}")
 
 
-@bot.tree.command(name="mezar-kaz", description="Toprağı kaz, arşivden bir söz çıkar", guild=GUILD)
-async def mezar_kaz(interaction: discord.Interaction) -> None:
-    if not state.quotes:
-        await interaction.response.send_message(
-            "Toprak boş — arşiv henüz doldurulmamış.", ephemeral=True
-        )
+@bot.tree.command(name="mezar-kaz", description="Toprağı kaz, birinin eski lafını çıkar", guild=GUILD)
+@app_commands.describe(kisi="Belli birinin mezarını kaz (boş bırakırsan rastgele)")
+async def mezar_kaz(interaction: discord.Interaction, kisi: Optional[discord.Member] = None) -> None:
+    havuz = state.dug_quotes
+    if kisi is not None:
+        havuz = [k for k in havuz if k["u"] == str(kisi.id)]
+
+    if not havuz:
+        if not state.dug_quotes:
+            mesaj = "Toprak boş. Önce bir yönetici `/kazi-tara` çalıştırsın. ⛏️"
+        else:
+            mesaj = f"{kisi.display_name} için kazacak bir şey yok, mezarı bomboş. 🕳️"
+        await interaction.response.send_message(mesaj, ephemeral=True)
         return
 
-    soz = random.choice(state.quotes)
+    secim = random.choice(havuz)
     embed = discord.Embed(
-        title="⛏️ Toprağı kazdın",
-        description=f"Çıkan şey:\n\n> {soz}",
+        title=random.choice(KAZI_GIRISLERI),
+        description=f"> {secim['t']}\n\n— <@{secim['u']}>",
         colour=discord.Colour.from_str("#7FA587"),
     )
-    embed.set_footer(text=f"Arşivde {len(state.quotes)} söz gömülü")
+    embed.set_footer(text=f"Arşivde {len(state.dug_quotes)} söz gömülü")
     await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(
+    name="kazi-tara",
+    description="Sunucuyu tarayıp herkesin sözlerini kazı arşivine doldurur (yönetici)",
+    guild=GUILD,
+)
+@app_commands.describe(
+    rol="Sadece bu roldeki kişilerin sözleri toplansın (boş = herkes)",
+    kanal_basina="Kanal başına taranacak mesaj sayısı (varsayılan 3000)",
+)
+@app_commands.checks.has_permissions(manage_guild=True)
+async def kazi_tara(
+    interaction: discord.Interaction,
+    rol: Optional[discord.Role] = None,
+    kanal_basina: int = 3000,
+) -> None:
+    await interaction.response.send_message(
+        f"⛏️ Kazı başladı — kanal başına {kanal_basina} mesaj"
+        + (f", sadece **{rol.name}** rolü." if rol else ", herkes.")
+        + " Birkaç dakika sürebilir.",
+        ephemeral=True,
+    )
+
+    guild = interaction.guild
+    assert guild is not None
+
+    # Ayni metni iki kere yazmayalim diye kisi+metin ciftini takip ediyoruz
+    gorulen: set[tuple[str, str]] = {(k["u"], k["t"]) for k in state.dug_quotes}
+    yeni: list[dict[str, str]] = []
+    taranan_kanal = 0
+    kisiler: set[str] = set()
+
+    for channel in guild.text_channels:
+        izin = channel.permissions_for(guild.me)
+        if not (izin.read_message_history and izin.view_channel):
+            continue
+        taranan_kanal += 1
+        try:
+            async for message in channel.history(limit=kanal_basina, oldest_first=False):
+                yazar = message.author
+                if yazar.bot:
+                    continue
+                if rol is not None:
+                    uye = guild.get_member(yazar.id)
+                    if uye is None or rol not in uye.roles:
+                        continue
+                soz = clean_quote(message.content)
+                if not soz:
+                    continue
+                cift = (str(yazar.id), soz)
+                if cift in gorulen:
+                    continue
+                gorulen.add(cift)
+                yeni.append({"u": cift[0], "t": cift[1]})
+                kisiler.add(cift[0])
+        except discord.HTTPException:
+            continue
+
+    birlesik = state.dug_quotes + yeni
+    if len(birlesik) > MAX_KAZI:
+        # Kirparken uzunluga gore secmek kisa ve komik laflari eler; rastgele daha adil
+        birlesik = random.sample(birlesik, MAX_KAZI)
+    state.dug_quotes = birlesik
+    await persist()
+
+    await interaction.followup.send(
+        f"✅ **{taranan_kanal}** kanal tarandı.\n"
+        f"⛏️ **{len(yeni)}** yeni söz gömüldü, **{len(kisiler)}** kişiden.\n"
+        f"🗄️ Arşivdeki toplam: **{len(state.dug_quotes)}**",
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(name="sirala", description="En çok mum yakanlar", guild=GUILD)
@@ -1057,38 +1251,6 @@ async def agit(interaction: discord.Interaction) -> None:
     )
     embed.set_footer(text=f"— {interaction.user.display_name}")
     await interaction.response.send_message(embed=embed)
-
-
-YORICK_SOZLERI = [
-    "Vah zavallı Yorick! Onu tanırdım, sonsuz nükte sahibi bir adamdı.",
-    "Bir kafatası tuttum elimde, bana baktı ve hiçbir şey demedi. Tam bir sohbet arkadaşı.",
-    "Şu kafatası bir zamanlar sesli kanalda en çok konuşandı.",
-    "Herkes bir gün kafatası olur, mesele kimin elinde olacağın.",
-    "Yorick sustu, ama sunucu susmadı.",
-    "Bu kafatası hiç bildirim açmadı, huzuru öyle buldu.",
-    "Ölüm, ping'in sonsuza kadar sabitlenmesidir.",
-]
-
-ANIT_YAZILARI = [
-    "adına dikilmiştir, sebebi kimse hatırlamıyor",
-    "anısına — henüz ölmedi ama hazırlık iyidir",
-    "onuruna dikildi, kendisine sorulmadı",
-    "için yapıldı, masraflar ortak kasadan karşılandı",
-    "adına — bir gün gerekir",
-]
-
-HAYIR_ISLERI = [
-    "bir sokak kedisi doyuruldu",
-    "bir yaşlıya yol tarif edildi",
-    "kimseye küfredilmedi (bugünlük)",
-    "bir arkadaşın mesajı görmezden gelinmedi",
-    "sesli kanalda mikrofon kapatıldı",
-    "bir ranked maç sonunda kimse suçlanmadı",
-    "birine 'geçmiş olsun' yazıldı",
-    "bir mesaj atılmadan önce iki kere düşünüldü",
-    "spoiler verilmedi",
-    "bir tartışma büyümeden bitirildi",
-]
 
 
 @bot.tree.command(name="kafatasi", description="Yorick'i eline al", guild=GUILD)
@@ -1182,6 +1344,7 @@ async def mezarlik(interaction: discord.Interaction) -> None:
     embed.title = "🪦 Mezarlık"
     embed.add_field(name="Okunan Yasin", value=str(state.yasin), inline=True)
     embed.add_field(name="Arşivdeki söz", value=str(len(state.quotes)), inline=True)
+    embed.add_field(name="Kazı arşivi", value=str(len(state.dug_quotes)), inline=True)
     embed.add_field(
         name="Hayalet",
         value=f"{GHOST_INTERVAL_HOURS} saatte bir konuşur",
