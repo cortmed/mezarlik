@@ -359,8 +359,16 @@ async def _before_sayac() -> None:
 # ---------------------------------------------------------------- 2) hayalet webhook
 
 
-async def ghost_webhook() -> Optional[discord.Webhook]:
-    """Hayaletin konustugu webhook'u bulur, yoksa olusturur."""
+async def ghost_webhook(yeniden_kur: bool = False) -> Optional[discord.Webhook]:
+    """Hayaletin konustugu webhook'u bulur, yoksa olusturur.
+
+    yeniden_kur=True verilirse kayitli adres atilir ve sifirdan acilir; webhook'un
+    bagli oldugu kanal silindiyse Discord 10015 (Unknown Webhook) donuyor ve
+    kayitli adres kalici olarak olu kaliyor.
+    """
+    if yeniden_kur:
+        state.ghost_webhook_url = None
+
     if state.ghost_webhook_url:
         try:
             return discord.Webhook.from_url(state.ghost_webhook_url, client=bot)
@@ -411,13 +419,29 @@ async def hayalet() -> None:
     isim = member.display_name if member else "hayalet"
     avatar = member.display_avatar.url if member else None
 
+    async def gonder(webhook: discord.Webhook) -> None:
+        await webhook.send(content=quote, username=isim[:80], avatar_url=avatar)
+
     try:
-        await hook.send(content=quote, username=isim[:80], avatar_url=avatar)
-        state.used_quotes.append(index)
-        await persist()
-        print(f"[hayalet] konustu: {quote[:60]}")
+        await gonder(hook)
     except discord.HTTPException as exc:
-        print(f"[hayalet] gonderilemedi: {exc}")
+        if getattr(exc, "code", None) != 10015:
+            print(f"[hayalet] gonderilemedi: {exc}")
+            return
+        # Webhook silinmis (kanal gitmis olabilir): yenisini acip bir kere daha dene
+        print("[hayalet] webhook olmus, yenisi aciliyor")
+        hook = await ghost_webhook(yeniden_kur=True)
+        if hook is None:
+            return
+        try:
+            await gonder(hook)
+        except discord.HTTPException as tekrar:
+            print(f"[hayalet] yeni webhook ile de gonderilemedi: {tekrar}")
+            return
+
+    state.used_quotes.append(index)
+    await persist()
+    print(f"[hayalet] konustu: {quote[:60]}")
 
 
 @hayalet.before_loop
